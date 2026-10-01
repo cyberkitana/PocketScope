@@ -1,66 +1,90 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
+# =========================
+# Flutter / Dart
+# =========================
 
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-/build/
-/coverage/
+build/
+coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
 
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
+# Android build outputs
 /android/app/debug
 /android/app/profile
 /android/app/release
 
-# Widget Preview related
+# Flutter generated files
+app.*.symbols
+app.*.map.json
 .widget_preview/
 
+
+# =========================
+# IDE files
+# =========================
+
+.vs/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+
+# =========================
+# General temporary files
+# =========================
+
+*.log
+*.swp
+*.pyc
+*.class
+.DS_Store
+
+
+# =========================
 # Python
+# =========================
+
 **/.venv/
 **/__pycache__/
-*.pyc
 
-# Python analysis data and generated files
+
+# =========================
+# Python datasets
+# =========================
+
 python_analysis/TXL-PBC/
 python_analysis/dataset/
 python_analysis/training_cells/
 python_analysis/validation_cells/
 python_analysis/test_cells/
+
+
+# =========================
+# Python generated files
+# =========================
+
 python_analysis/features/
 python_analysis/detection_examples/
 python_analysis/detection_diagnostics/
+python_analysis/sickle_demo_output/
 
-# Python generated model files
-python_analysis/models/
+
+# =========================
+# YOLO training output
+# =========================
+
+runs/
+
+
+# =========================
+# Temporary ML files
+# =========================
+
+python_analysis/image_height
+python_analysis/image_width
+python_analysis/MATCH_IOU

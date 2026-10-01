@@ -1,6 +1,7 @@
 import '../services/database_service.dart';
 
-/// Generates sequential IDs for patients, samples, and images.
+/// Generates sequential IDs for patients, medical records,
+/// samples, and images.
 class IdGenerator {
   /// Generates the next patient ID.
   ///
@@ -14,7 +15,19 @@ class IdGenerator {
     );
   }
 
-  /// Generates the next sample ID based on specimen type.
+  /// Generates the next Medical Record Number.
+  ///
+  /// Example:
+  /// MR-000001
+  /// MR-000002
+  static Future<String> generateMedicalRecordNumber() async {
+    return _generateId(
+      counterType: 'medical_record',
+      prefix: 'MR',
+    );
+  }
+
+  /// Generates the next sample ID based on the specimen type.
   ///
   /// Urine:
   /// U-000001
@@ -31,13 +44,19 @@ class IdGenerator {
       );
     }
 
-    return _generateId(
-      counterType: 'blood',
-      prefix: 'B',
+    if (specimenType == 'Blood') {
+      return _generateId(
+        counterType: 'blood',
+        prefix: 'B',
+      );
+    }
+
+    throw Exception(
+      'Invalid specimen type: $specimenType',
     );
   }
 
-  /// Generates the next image ID based on specimen type.
+  /// Generates the next image ID based on the specimen type.
   ///
   /// Urine:
   /// IMG-U-000001
@@ -54,9 +73,15 @@ class IdGenerator {
       );
     }
 
-    return _generateId(
-      counterType: 'image_blood',
-      prefix: 'IMG-B',
+    if (specimenType == 'Blood') {
+      return _generateId(
+        counterType: 'image_blood',
+        prefix: 'IMG-B',
+      );
+    }
+
+    throw Exception(
+      'Invalid specimen type: $specimenType',
     );
   }
 
@@ -80,7 +105,8 @@ class IdGenerator {
       );
     }
 
-    final currentNumber = results.first['next_number'] as int;
+    final currentNumber =
+        results.first['next_number'] as int;
 
     await database.update(
       'id_counters',

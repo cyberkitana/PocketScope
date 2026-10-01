@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../services/database_service.dart';
+import '../../utils/id_generator.dart';
 import '../patients/register_patient_screen.dart';
 import '../screens/images/upload_images_screen.dart';
 
-/// Screen used to create a new biological sample.
-///
-/// A sample must always be linked to a patient before it can be created.
-/// The user can either search for an existing patient or register a new one.
+const Color teal = Color(0xFF087E78);
+const Color primaryBlack = Color(0xFF111111);
+const Color secondaryText = Color(0xFF60747B);
+const Color pageBackground = Color(0xFFEEF3F5);
+const Color lightGreen = Color(0xFFE2F3F1);
+const Color borderColor = Color(0xFFD0D7DA);
+
 class NewSampleScreen extends StatefulWidget {
   final String? patientId;
 
@@ -17,75 +22,82 @@ class NewSampleScreen extends StatefulWidget {
   });
 
   @override
-  State<NewSampleScreen> createState() =>
-      _NewSampleScreenState();
+  State<NewSampleScreen> createState() => _NewSampleScreenState();
 }
 
-class _NewSampleScreenState
-    extends State<NewSampleScreen> {
-  final TextEditingController searchController =
+class _NewSampleScreenState extends State<NewSampleScreen> {
+  final TextEditingController patientSearchController =
+      TextEditingController();
+
+  final TextEditingController sampleSpecificationController =
       TextEditingController();
 
   final TextEditingController reasonController =
       TextEditingController();
 
   List<Map<String, dynamic>> patients = [];
+  List<Map<String, dynamic>> filteredPatients = [];
 
   Map<String, dynamic>? selectedPatient;
 
   String? specimenType;
+  String? magnification;
+  String sampleId = '';
 
   DateTime collectionDateTime = DateTime.now();
 
   bool isLoading = true;
   bool isSaving = false;
 
+  final List<String> magnificationOptions = [
+    '4×',
+    '10×',
+    '40×',
+    '100×',
+  ];
+
   @override
   void initState() {
     super.initState();
 
-    searchController.addListener(
-      filterPatients,
-    );
+    patientSearchController.addListener(filterPatients);
 
     loadPatients();
   }
 
   @override
   void dispose() {
-    searchController.removeListener(
-      filterPatients,
-    );
-
-    searchController.dispose();
+    patientSearchController.dispose();
+    sampleSpecificationController.dispose();
     reasonController.dispose();
 
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // PATIENT DATA
+  // ---------------------------------------------------------------------------
+
   Future<void> loadPatients() async {
     try {
-      final loadedPatients =
-          await DatabaseService.getPatients();
-
-      Map<String, dynamic>? initialPatient;
-
-      if (widget.patientId != null) {
-        initialPatient =
-            await DatabaseService.getPatient(
-          widget.patientId!,
-        );
-      }
+      final loadedPatients = await DatabaseService.getPatients();
 
       if (!mounted) {
         return;
       }
 
+      final patientList =
+          List<Map<String, dynamic>>.from(loadedPatients);
+
       setState(() {
-        patients = loadedPatients;
-        selectedPatient = initialPatient;
+        patients = patientList;
+        filteredPatients = patientList;
         isLoading = false;
       });
+
+      if (widget.patientId != null) {
+        selectPatientById(widget.patientId!);
+      }
     } catch (error) {
       if (!mounted) {
         return;
@@ -95,13 +107,7 @@ class _NewSampleScreenState
         isLoading = false;
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Unable to load patients: $error',
-          ),
-        ),
-      );
+      showError('Unable to load patients: $error');
     }
   }
 
@@ -110,175 +116,229 @@ class _NewSampleScreenState
       return;
     }
 
-    setState(() {});
-  }
+    final query =
+        patientSearchController.text.trim().toLowerCase();
 
-  List<Map<String, dynamic>> get filteredPatients {
-    final search =
-        searchController.text.trim().toLowerCase();
+    if (query.isEmpty) {
+      setState(() {
+        filteredPatients =
+            List<Map<String, dynamic>>.from(patients);
+      });
 
-    if (search.isEmpty) {
-      return patients;
+      return;
     }
 
-    return patients.where((patient) {
-      final firstName =
-          (patient['first_name'] ?? '')
-              .toString()
-              .toLowerCase();
+    final results = patients.where((patient) {
+      final firstName = _patientValue(
+        patient,
+        [
+          'first_name',
+          'firstName',
+          'name',
+        ],
+      );
 
-      final surname =
-          (patient['surname'] ?? '')
-              .toString()
-              .toLowerCase();
+      final lastName = _patientValue(
+        patient,
+        [
+          'last_name',
+          'lastName',
+          'surname',
+        ],
+      );
 
-      final patientId =
-          (patient['id'] ?? '')
-              .toString()
-              .toLowerCase();
+      final patientId = _patientValue(
+        patient,
+        [
+          'id',
+          'patient_id',
+          'patientId',
+        ],
+      );
 
-      return firstName.contains(search) ||
-          surname.contains(search) ||
-          patientId.contains(search);
+      final medicalRecordNumber = _patientValue(
+        patient,
+        [
+          'medical_record_number',
+          'medicalRecordNumber',
+          'mrn',
+        ],
+      );
+
+      final searchableText = [
+        firstName,
+        lastName,
+        patientId,
+        medicalRecordNumber,
+      ].join(' ').toLowerCase();
+
+      return searchableText.contains(query);
     }).toList();
-  }
-
-  String patientName(
-    Map<String, dynamic> patient,
-  ) {
-    return '${patient['first_name']} '
-        '${patient['surname']}';
-  }
-
-  Future<String> generateSampleId(
-    String specimen,
-  ) async {
-    final database =
-        await DatabaseService.database;
-
-    final counterType =
-        specimen.toLowerCase() == 'urine'
-            ? 'urine'
-            : 'blood';
-
-    return database.transaction(
-      (transaction) async {
-        final results =
-            await transaction.query(
-          'id_counters',
-          columns: [
-            'next_number',
-          ],
-          where: 'counter_type = ?',
-          whereArgs: [counterType],
-          limit: 1,
-        );
-
-        int nextNumber;
-
-        if (results.isEmpty) {
-          nextNumber = 1;
-
-          await transaction.insert(
-            'id_counters',
-            {
-              'counter_type': counterType,
-              'next_number': 2,
-            },
-          );
-        } else {
-          nextNumber =
-              results.first['next_number'] as int;
-
-          await transaction.update(
-            'id_counters',
-            {
-              'next_number':
-                  nextNumber + 1,
-            },
-            where: 'counter_type = ?',
-            whereArgs: [counterType],
-          );
-        }
-
-        final prefix =
-            counterType == 'urine'
-                ? 'S-U-'
-                : 'S-B-';
-
-        return '$prefix'
-            '${nextNumber.toString().padLeft(6, '0')}';
-      },
-    );
-  }
-
-  Future<void> selectPatient(
-    Map<String, dynamic> patient,
-  ) async {
-    FocusScope.of(context).unfocus();
 
     setState(() {
-      selectedPatient = patient;
+      filteredPatients = results;
     });
   }
 
-  Future<void> registerNewPatient() async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            const RegisterPatientScreen(),
-      ),
+  String _patientValue(
+    Map<String, dynamic> patient,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final value = patient[key];
+
+      if (value != null &&
+          value.toString().trim().isNotEmpty) {
+        return value.toString().trim();
+      }
+    }
+
+    return '';
+  }
+
+  String patientDisplayName(
+    Map<String, dynamic> patient,
+  ) {
+    final firstName = _patientValue(
+      patient,
+      [
+        'first_name',
+        'firstName',
+        'name',
+      ],
     );
+
+    final lastName = _patientValue(
+      patient,
+      [
+        'last_name',
+        'lastName',
+        'surname',
+      ],
+    );
+
+    final fullName = [
+      firstName,
+      lastName,
+    ].where((value) {
+      return value.isNotEmpty;
+    }).join(' ');
+
+    if (fullName.isNotEmpty) {
+      return fullName;
+    }
+
+    return _patientValue(
+      patient,
+      [
+        'patient_id',
+        'id',
+        'patientId',
+      ],
+    );
+  }
+
+  String patientIdentifier(
+    Map<String, dynamic> patient,
+  ) {
+    return _patientValue(
+      patient,
+      [
+        'patient_id',
+        'id',
+        'patientId',
+      ],
+    );
+  }
+
+  void selectPatientById(String patientId) {
+    for (final patient in patients) {
+      final currentPatientId = _patientValue(
+        patient,
+        [
+          'id',
+          'patient_id',
+          'patientId',
+        ],
+      );
+
+      if (currentPatientId == patientId) {
+        selectPatient(patient);
+        return;
+      }
+    }
+  }
+
+  void selectPatient(
+    Map<String, dynamic> patient,
+  ) {
+    setState(() {
+      selectedPatient = patient;
+      patientSearchController.text =
+          patientDisplayName(patient);
+    });
+
+    if (specimenType != null) {
+      generateSampleId();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // SAMPLE DATA
+  // ---------------------------------------------------------------------------
+
+  Future<void> selectSpecimen(String value) async {
+    setState(() {
+      specimenType = value;
+      sampleId = '';
+    });
+
+    await generateSampleId();
+  }
+
+  Future<void> generateSampleId() async {
+    if (specimenType == null) {
+      return;
+    }
+
+    final generatedId =
+        await IdGenerator.generateSampleId(specimenType!);
 
     if (!mounted) {
       return;
     }
 
-    if (result is String) {
-      final newlyRegisteredPatient =
-          await DatabaseService.getPatient(
-        result,
-      );
-
-      if (newlyRegisteredPatient != null) {
-        setState(() {
-          selectedPatient =
-              newlyRegisteredPatient;
-          searchController.clear();
-        });
-      }
-
-      await loadPatients();
-    } else {
-      await loadPatients();
-    }
+    setState(() {
+      sampleId = generatedId;
+    });
   }
 
-  Future<void> chooseCollectionDateTime() async {
-    final selectedDate =
-        await showDatePicker(
+  // ---------------------------------------------------------------------------
+  // COLLECTION DATE AND TIME
+  // ---------------------------------------------------------------------------
+
+  Future<void> selectCollectionDate() async {
+    final selectedDate = await showDatePicker(
       context: context,
       initialDate: collectionDateTime,
-      firstDate: DateTime(1900),
+      firstDate: DateTime(2020),
       lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: teal,
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: primaryBlack,
+            ),
+          ),
+          child: child!,
+        );
+      },
     );
 
-    if (selectedDate == null ||
-        !mounted) {
-      return;
-    }
-
-    final selectedTime =
-        await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(
-        collectionDateTime,
-      ),
-    );
-
-    if (selectedTime == null ||
-        !mounted) {
+    if (selectedDate == null || !mounted) {
       return;
     }
 
@@ -287,75 +347,116 @@ class _NewSampleScreenState
         selectedDate.year,
         selectedDate.month,
         selectedDate.day,
+        collectionDateTime.hour,
+        collectionDateTime.minute,
+      );
+    });
+  }
+
+  Future<void> selectCollectionTime() async {
+    final selectedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(
+        collectionDateTime,
+      ),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: teal,
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: primaryBlack,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (selectedTime == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      collectionDateTime = DateTime(
+        collectionDateTime.year,
+        collectionDateTime.month,
+        collectionDateTime.day,
         selectedTime.hour,
         selectedTime.minute,
       );
     });
   }
 
-  String formatCollectionDateTime() {
-    final day =
-        collectionDateTime.day
-            .toString()
-            .padLeft(2, '0');
+  // ---------------------------------------------------------------------------
+  // PATIENT REGISTRATION
+  // ---------------------------------------------------------------------------
 
-    final month =
-        collectionDateTime.month
-            .toString()
-            .padLeft(2, '0');
+  Future<void> openRegisterPatient() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const RegisterPatientScreen(),
+      ),
+    );
 
-    final year =
-        collectionDateTime.year
-            .toString();
+    if (!mounted) {
+      return;
+    }
 
-    final hour =
-        collectionDateTime.hour
-            .toString()
-            .padLeft(2, '0');
-
-    final minute =
-        collectionDateTime.minute
-            .toString()
-            .padLeft(2, '0');
-
-    return '$day/$month/$year '
-        '$hour:$minute';
+    await loadPatients();
   }
+
+  // ---------------------------------------------------------------------------
+  // CREATE SAMPLE
+  // ---------------------------------------------------------------------------
 
   Future<void> createSample() async {
     if (selectedPatient == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please select a patient first.',
-          ),
-        ),
-      );
-
+      showError('Please select a patient.');
       return;
     }
 
     if (specimenType == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please select a specimen type.',
-          ),
-        ),
-      );
+      showError('Please select a specimen type.');
+      return;
+    }
 
+    if (sampleSpecificationController.text.trim().isEmpty) {
+      showError('Please enter a sample specification.');
+      return;
+    }
+
+    if (magnification == null) {
+      showError('Please select a magnification.');
       return;
     }
 
     if (reasonController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please enter the reason for the visit.',
-          ),
-        ),
-      );
+      showError('Please enter the reason for the visit.');
+      return;
+    }
 
+    if (sampleId.isEmpty) {
+      await generateSampleId();
+    }
+
+    if (sampleId.isEmpty) {
+      showError('A sample ID could not be generated.');
+      return;
+    }
+
+    final patientId = patientIdentifier(selectedPatient!);
+
+    if (patientId.isEmpty) {
+      showError(
+        'The selected patient does not have a valid patient ID.',
+      );
+      return;
+    }
+
+    if (isSaving) {
       return;
     }
 
@@ -364,35 +465,28 @@ class _NewSampleScreenState
     });
 
     try {
-      final sampleId =
-          await generateSampleId(
-        specimenType!,
-      );
-
       await DatabaseService.saveSample({
         'id': sampleId,
-        'patient_id':
-            selectedPatient!['id'],
-        'specimen_type':
-            specimenType!,
-        'reason_for_visit':
-            reasonController.text.trim(),
+        'patient_id': patientId,
+        'specimen_type': specimenType!,
+        'sample_specification':
+            sampleSpecificationController.text.trim(),
+        'magnification': magnification!,
+        'reason_for_visit': reasonController.text.trim(),
         'collection_date_time':
-            collectionDateTime
-                .toIso8601String(),
+            collectionDateTime.toIso8601String(),
         'analysis_date_time': null,
-        'analysis_status': 'Pending',
+        'analysis_status': 'New Sample',
       });
 
       if (!mounted) {
         return;
       }
 
-      await Navigator.pushReplacement(
+      Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) =>
-              UploadImagesScreen(
+          builder: (context) => UploadImagesScreen(
             sampleId: sampleId,
             specimenType: specimenType!,
           ),
@@ -407,81 +501,98 @@ class _NewSampleScreenState
         isSaving = false;
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Unable to create sample: $error',
-          ),
-        ),
-      );
+      showError('Unable to create the sample: $error');
     }
   }
 
-  Widget buildSelectedPatientCard() {
-    if (selectedPatient == null) {
-      return const SizedBox.shrink();
-    }
-
-    return Card(
-      margin: const EdgeInsets.only(
-        top: 16,
+  void showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
+    );
+  }
+
+  String formatDate(DateTime dateTime) {
+    final day =
+        dateTime.day.toString().padLeft(2, '0');
+
+    final month =
+        dateTime.month.toString().padLeft(2, '0');
+
+    return '$day/$month/${dateTime.year}';
+  }
+
+  String formatTime(DateTime dateTime) {
+    final hour =
+        dateTime.hour.toString().padLeft(2, '0');
+
+    final minute =
+        dateTime.minute.toString().padLeft(2, '0');
+
+    return '$hour:$minute';
+  }
+
+  // ---------------------------------------------------------------------------
+  // MAIN BUILD
+  // ---------------------------------------------------------------------------
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: pageBackground,
+      body: SafeArea(
+        child: Column(
           children: [
-            CircleAvatar(
-              child: Text(
-                (selectedPatient!['first_name'] ??
-                        '?')
-                    .toString()
-                    .substring(0, 1)
-                    .toUpperCase(),
-              ),
-            ),
-            const SizedBox(width: 12),
+            _buildHeader(),
+
             Expanded(
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Selected Patient',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight:
-                          FontWeight.w600,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(
+                      20,
+                      16,
+                      20,
+                      24,
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    patientName(
-                      selectedPatient!,
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: 900,
+                        ),
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            _buildPatientSection(),
+
+                            const SizedBox(height: 18),
+
+                            _buildSampleSection(
+                              constraints.maxWidth,
+                            ),
+
+                            const SizedBox(height: 18),
+
+                            _buildReasonSection(),
+
+                            const SizedBox(height: 18),
+
+                            _buildCollectionSection(
+                              constraints.maxWidth,
+                            ),
+
+                            const SizedBox(height: 22),
+
+                            _buildCreateButton(),
+                          ],
+                        ),
+                      ),
                     ),
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight:
-                          FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    'Patient ID: '
-                    '${selectedPatient!['id']}',
-                    style: TextStyle(
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ],
+                  );
+                },
               ),
-            ),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  selectedPatient = null;
-                });
-              },
-              child: const Text('Change'),
             ),
           ],
         ),
@@ -489,334 +600,1000 @@ class _NewSampleScreenState
     );
   }
 
-  Widget buildPatientSearch() {
-    if (selectedPatient != null) {
-      return buildSelectedPatientCard();
-    }
+  // ---------------------------------------------------------------------------
+  // HEADER
+  // ---------------------------------------------------------------------------
 
-    final results = filteredPatients;
-
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        TextField(
-          controller: searchController,
-          decoration: InputDecoration(
-            labelText: 'Search Patient',
-            hintText:
-                'Name, surname or patient ID',
-            prefixIcon:
-                const Icon(Icons.search),
-            suffixIcon:
-                searchController.text.isEmpty
-                    ? null
-                    : IconButton(
-                        onPressed: () {
-                          searchController.clear();
-                        },
-                        icon: const Icon(
-                          Icons.clear,
-                        ),
-                      ),
-            border: const OutlineInputBorder(),
+  Widget _buildHeader() {
+    return Container(
+      width: double.infinity,
+      height: 62,
+      padding: const EdgeInsets.symmetric(
+        horizontal: 20,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          bottom: BorderSide(
+            color: borderColor,
           ),
         ),
-
-        const SizedBox(height: 12),
-
-        if (results.isNotEmpty)
-          Container(
-            constraints:
-                const BoxConstraints(
-              maxHeight: 240,
-            ),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: Colors.grey.shade300,
-              ),
-              borderRadius:
-                  BorderRadius.circular(8),
-            ),
-            child: ListView.separated(
-              shrinkWrap: true,
-              itemCount: results.length,
-              separatorBuilder:
-                  (context, index) =>
-                      const Divider(
-                height: 1,
-              ),
-              itemBuilder:
-                  (context, index) {
-                final patient =
-                    results[index];
-
-                return ListTile(
-                  title: Text(
-                    patientName(patient),
+      ),
+      child: Row(
+        children: [
+          Material(
+            color: pageBackground,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              onTap: isSaving
+                  ? null
+                  : () {
+                      Navigator.pop(context);
+                    },
+              borderRadius: BorderRadius.circular(8),
+              child: const SizedBox(
+                width: 36,
+                height: 36,
+                child: Center(
+                  child: Icon(
+                    Icons.chevron_left,
+                    size: 23,
+                    color: primaryBlack,
                   ),
-                  subtitle: Text(
-                    'Patient ID: '
-                    '${patient['id']}',
-                  ),
-                  trailing: const Icon(
-                    Icons.chevron_right,
-                  ),
-                  onTap: () {
-                    selectPatient(patient);
-                  },
-                );
-              },
-            ),
-          )
-        else
-          Container(
-            width: double.infinity,
-            padding:
-                const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              borderRadius:
-                  BorderRadius.circular(8),
-              border: Border.all(
-                color: Colors.grey.shade300,
+                ),
               ),
-            ),
-            child: const Text(
-              'No matching patients found.',
             ),
           ),
 
-        const SizedBox(height: 12),
+          const SizedBox(width: 10),
 
-        SizedBox(
+          const Expanded(
+            child: Column(
+              mainAxisAlignment:
+                  MainAxisAlignment.center,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'New Sample',
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: primaryBlack,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Create a sample for analysis',
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    color: secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // PATIENT SECTION
+  // ---------------------------------------------------------------------------
+
+  Widget _buildPatientSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionTitle('Patient'),
+
+        const SizedBox(height: 8),
+
+        LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 560) {
+              return Column(
+                children: [
+                  TextField(
+                    controller: patientSearchController,
+                    decoration: _inputDecoration(
+                      hintText: 'Search patient name or ID',
+                      prefixIcon: Icons.search,
+                    ),
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: _buildNewPatientButton(),
+                  ),
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: patientSearchController,
+                    decoration: _inputDecoration(
+                      hintText: 'Search patient name or ID',
+                      prefixIcon: Icons.search,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                _buildNewPatientButton(),
+              ],
+            );
+          },
+        ),
+
+        const SizedBox(height: 8),
+
+        _buildPatientResults(),
+      ],
+    );
+  }
+
+  Widget _buildNewPatientButton() {
+    return OutlinedButton(
+      onPressed:
+          isSaving ? null : openRegisterPatient,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: teal,
+        disabledForegroundColor: secondaryText,
+        side: const BorderSide(
+          color: teal,
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 11,
+        ),
+        minimumSize: const Size(0, 43),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(7),
+        ),
+      ),
+      child: const Text(
+        'New Patient',
+        style: TextStyle(
+          fontFamily: 'Inter',
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPatientResults() {
+    if (isLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(
+          vertical: 12,
+        ),
+        child: Center(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: teal,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (filteredPatients.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(
+          vertical: 8,
+        ),
+        child: Text(
+          'No patients found.',
+          style: TextStyle(
+            fontFamily: 'Inter',
+            fontSize: 12,
+            color: secondaryText,
+          ),
+        ),
+      );
+    }
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        maxHeight: 210,
+      ),
+      child: ListView.builder(
+        shrinkWrap: true,
+        itemCount: filteredPatients.length,
+        itemBuilder: (context, index) {
+          final patient = filteredPatients[index];
+
+          final patientId = patientIdentifier(patient);
+
+          final selectedId =
+              selectedPatient == null
+                  ? ''
+                  : patientIdentifier(selectedPatient!);
+
+          final isSelected =
+              patientId.isNotEmpty &&
+              patientId == selectedId;
+
+          return Container(
+            margin: const EdgeInsets.only(
+              bottom: 7,
+            ),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? lightGreen
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isSelected
+                    ? teal
+                    : borderColor,
+                width: isSelected ? 1.2 : 1,
+              ),
+            ),
+            child: ListTile(
+              dense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 1,
+              ),
+              leading: Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? teal
+                      : pageBackground,
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  _patientInitials(
+                    patientDisplayName(patient),
+                  ),
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: isSelected
+                        ? Colors.white
+                        : teal,
+                  ),
+                ),
+              ),
+              title: Text(
+                patientDisplayName(patient),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: primaryBlack,
+                ),
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(
+                  top: 2,
+                ),
+                child: Text(
+                  'Patient ID: $patientId',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    color: secondaryText,
+                  ),
+                ),
+              ),
+              trailing: Icon(
+                isSelected
+                    ? Icons.check_circle
+                    : Icons.chevron_right,
+                size: 19,
+                color: isSelected
+                    ? teal
+                    : secondaryText,
+              ),
+              onTap: () {
+                selectPatient(patient);
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String _patientInitials(String name) {
+    final parts = name.trim().split(
+      RegExp(r'\s+'),
+    );
+
+    if (parts.isEmpty || parts.first.isEmpty) {
+      return '?';
+    }
+
+    if (parts.length == 1) {
+      return parts.first[0].toUpperCase();
+    }
+
+    return '${parts.first[0]}${parts.last[0]}'
+        .toUpperCase();
+  }
+
+  // ---------------------------------------------------------------------------
+  // SAMPLE SECTION
+  // ---------------------------------------------------------------------------
+
+  Widget _buildSampleSection(double availableWidth) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionDivider(),
+
+        const SizedBox(height: 14),
+
+        _buildSectionTitle('Sample Details'),
+
+        const SizedBox(height: 14),
+
+        if (availableWidth >= 650)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                  children: [
+                    _buildSpecimenType(),
+
+                    const SizedBox(height: 14),
+
+                    _buildMagnification(),
+                  ],
+                ),
+              ),
+
+              const SizedBox(width: 28),
+
+              Expanded(
+                child: _buildSampleId(),
+              ),
+            ],
+          )
+        else
+          Column(
+            crossAxisAlignment:
+                CrossAxisAlignment.start,
+            children: [
+              _buildSpecimenType(),
+
+              const SizedBox(height: 14),
+
+              _buildMagnification(),
+
+              const SizedBox(height: 14),
+
+              _buildSampleId(),
+            ],
+          ),
+
+        const SizedBox(height: 14),
+
+        _buildSampleSpecification(),
+      ],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // SPECIMEN TYPE
+  // ---------------------------------------------------------------------------
+
+  Widget _buildSpecimenType() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildFieldLabel('Specimen Type'),
+
+        const SizedBox(height: 8),
+
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _buildSpecimenCheckbox(
+              label: 'Urine',
+              value: 'Urine',
+              iconPath:
+                  'assets/images/urine_specimen.svg',
+            ),
+
+            _buildSpecimenCheckbox(
+              label: 'Blood',
+              value: 'Blood',
+              iconPath:
+                  'assets/images/blood_specimen.svg',
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSpecimenCheckbox({
+    required String label,
+    required String value,
+    required String iconPath,
+  }) {
+    final isSelected = specimenType == value;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          selectSpecimen(value);
+        },
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          constraints: const BoxConstraints(
+            minHeight: 42,
+          ),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 8,
+          ),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? lightGreen
+                : Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected
+                  ? teal
+                  : borderColor,
+              width: isSelected ? 1.2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildCustomCheckbox(isSelected),
+
+              const SizedBox(width: 8),
+
+              SvgPicture.asset(
+                iconPath,
+                width: 18,
+                height: 18,
+              ),
+
+              const SizedBox(width: 6),
+
+              Text(
+                label,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 12,
+                  fontWeight: isSelected
+                      ? FontWeight.w600
+                      : FontWeight.w500,
+                  color: primaryBlack,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCustomCheckbox(bool isSelected) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 120),
+      width: 18,
+      height: 18,
+      decoration: BoxDecoration(
+        color: isSelected
+            ? teal
+            : Colors.white,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: isSelected
+              ? teal
+              : const Color(0xFF9AA8AD),
+          width: 1.2,
+        ),
+      ),
+      child: isSelected
+          ? const Icon(
+              Icons.check,
+              size: 13,
+              color: Colors.white,
+            )
+          : null,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // MAGNIFICATION
+  // ---------------------------------------------------------------------------
+
+  Widget _buildMagnification() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildFieldLabel('Magnification'),
+
+        const SizedBox(height: 8),
+
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: magnificationOptions.map((option) {
+            return _buildMagnificationCheckbox(option);
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMagnificationCheckbox(String value) {
+    final isSelected = magnification == value;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          setState(() {
+            magnification =
+                isSelected ? null : value;
+          });
+        },
+        borderRadius: BorderRadius.circular(7),
+        child: Container(
+          constraints: const BoxConstraints(
+            minHeight: 38,
+          ),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 9,
+            vertical: 7,
+          ),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? lightGreen
+                : Colors.white,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: isSelected
+                  ? teal
+                  : borderColor,
+              width: isSelected ? 1.2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildCustomCheckbox(isSelected),
+
+              const SizedBox(width: 7),
+
+              Text(
+                value,
+                style: TextStyle(
+                  fontFamily: 'Inter',
+                  fontSize: 11,
+                  fontWeight: isSelected
+                      ? FontWeight.w600
+                      : FontWeight.w500,
+                  color: isSelected
+                      ? teal
+                      : primaryBlack,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // SAMPLE ID
+  // ---------------------------------------------------------------------------
+
+  Widget _buildSampleId() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildFieldLabel('Sample ID'),
+
+        const SizedBox(height: 8),
+
+        Container(
           width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed:
-                registerNewPatient,
-            icon: const Icon(
-              Icons.person_add_outlined,
+          constraints: const BoxConstraints(
+            minHeight: 42,
+          ),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 10,
+          ),
+          decoration: BoxDecoration(
+            color: pageBackground,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: borderColor,
             ),
-            label: const Text(
-              'Register New Patient',
-            ),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.qr_code_2,
+                size: 18,
+                color: teal,
+              ),
+
+              const SizedBox(width: 8),
+
+              Expanded(
+                child: Text(
+                  sampleId.isEmpty
+                      ? 'Select specimen type'
+                      : sampleId,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: sampleId.isEmpty
+                        ? secondaryText
+                        : primaryBlack,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ],
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('New Sample'),
-      ),
-      body: isLoading
-          ? const Center(
-              child:
-                  CircularProgressIndicator(),
-            )
-          : SafeArea(
-              child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'New Sample',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
+  // ---------------------------------------------------------------------------
+  // SAMPLE SPECIFICATION
+  // ---------------------------------------------------------------------------
 
-                    const SizedBox(height: 6),
+  Widget _buildSampleSpecification() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildFieldLabel('Sample Specification'),
 
-                    Text(
-                      'Select the patient and enter '
-                      'the sample details.',
-                      style: TextStyle(
-                        color:
-                            Colors.grey.shade600,
-                      ),
-                    ),
+        const SizedBox(height: 7),
 
-                    const SizedBox(height: 24),
+        TextField(
+          controller: sampleSpecificationController,
+          decoration: _inputDecoration(
+            hintText:
+                'e.g. Midstream urine, whole blood',
+          ),
+        ),
+      ],
+    );
+  }
 
-                    const Text(
-                      'Patient',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
+  // ---------------------------------------------------------------------------
+  // REASON SECTION
+  // ---------------------------------------------------------------------------
 
-                    const SizedBox(height: 12),
+  Widget _buildReasonSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionDivider(),
 
-                    buildPatientSearch(),
+        const SizedBox(height: 14),
 
-                    const SizedBox(height: 28),
+        _buildSectionTitle('Reason for Visit'),
 
-                    const Text(
-                      'Specimen Type',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
+        const SizedBox(height: 8),
 
-                    const SizedBox(height: 12),
+        TextField(
+          controller: reasonController,
+          maxLines: 2,
+          decoration: _inputDecoration(
+            hintText:
+                'Enter the reason for collecting this sample',
+            contentPadding: const EdgeInsets.all(12),
+          ),
+        ),
+      ],
+    );
+  }
 
-                    Row(
-                      children: [
-                        Expanded(
-                          child:
-                              ChoiceChip(
-                            label:
-                                const Text(
-                              'Urine',
-                            ),
-                            selected:
-                                specimenType ==
-                                    'Urine',
-                            onSelected:
-                                (selected) {
-                              if (!selected) {
-                                return;
-                              }
+  // ---------------------------------------------------------------------------
+  // COLLECTION SECTION
+  // ---------------------------------------------------------------------------
 
-                              setState(() {
-                                specimenType =
-                                    'Urine';
-                              });
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child:
-                              ChoiceChip(
-                            label:
-                                const Text(
-                              'Blood',
-                            ),
-                            selected:
-                                specimenType ==
-                                    'Blood',
-                            onSelected:
-                                (selected) {
-                              if (!selected) {
-                                return;
-                              }
+  Widget _buildCollectionSection(double availableWidth) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionDivider(),
 
-                              setState(() {
-                                specimenType =
-                                    'Blood';
-                              });
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
+        const SizedBox(height: 14),
 
-                    const SizedBox(height: 28),
+        _buildSectionTitle('Collection Date & Time'),
 
-                    const Text(
-                      'Reason for Visit',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
+        const SizedBox(height: 8),
 
-                    const SizedBox(height: 12),
-
-                    TextField(
-                      controller:
-                          reasonController,
-                      maxLines: 3,
-                      decoration:
-                          const InputDecoration(
-                        hintText:
-                            'Enter reason for visit',
-                        border:
-                            OutlineInputBorder(),
-                      ),
-                    ),
-
-                    const SizedBox(height: 28),
-
-                    const Text(
-                      'Collection Date & Time',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    InkWell(
-                      onTap:
-                          chooseCollectionDateTime,
-                      borderRadius:
-                          BorderRadius.circular(
-                        8,
-                      ),
-                      child: InputDecorator(
-                        decoration:
-                            const InputDecoration(
-                          border:
-                              OutlineInputBorder(),
-                          prefixIcon:
-                              Icon(
-                            Icons
-                                .calendar_today_outlined,
-                          ),
-                        ),
-                        child: Text(
-                          formatCollectionDateTime(),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    SizedBox(
-                      width:
-                          double.infinity,
-                      height: 52,
-                      child: FilledButton(
-                        onPressed:
-                            isSaving
-                                ? null
-                                : createSample,
-                        child: isSaving
-                            ? const SizedBox(
-                                height: 22,
-                                width: 22,
-                                child:
-                                    CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text(
-                                'Create Sample',
-                              ),
-                      ),
-                    ),
-                  ],
+        if (availableWidth >= 500)
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: selectCollectionDate,
+                  borderRadius:
+                      BorderRadius.circular(7),
+                  child: _buildDateTimeField(
+                    Icons.calendar_today_outlined,
+                    formatDate(collectionDateTime),
+                  ),
                 ),
               ),
+
+              const SizedBox(width: 10),
+
+              Expanded(
+                child: InkWell(
+                  onTap: selectCollectionTime,
+                  borderRadius:
+                      BorderRadius.circular(7),
+                  child: _buildDateTimeField(
+                    Icons.access_time,
+                    formatTime(collectionDateTime),
+                  ),
+                ),
+              ),
+            ],
+          )
+        else
+          Column(
+            children: [
+              SizedBox(
+                width: double.infinity,
+                child: InkWell(
+                  onTap: selectCollectionDate,
+                  borderRadius:
+                      BorderRadius.circular(7),
+                  child: _buildDateTimeField(
+                    Icons.calendar_today_outlined,
+                    formatDate(collectionDateTime),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              SizedBox(
+                width: double.infinity,
+                child: InkWell(
+                  onTap: selectCollectionTime,
+                  borderRadius:
+                      BorderRadius.circular(7),
+                  child: _buildDateTimeField(
+                    Icons.access_time,
+                    formatTime(collectionDateTime),
+                  ),
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildDateTimeField(
+    IconData icon,
+    String value,
+  ) {
+    return Container(
+      constraints: const BoxConstraints(
+        minHeight: 42,
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 10,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(
+          color: borderColor,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 17,
+            color: teal,
+          ),
+
+          const SizedBox(width: 8),
+
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontFamily: 'Inter',
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: primaryBlack,
+              ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // CREATE BUTTON
+  // ---------------------------------------------------------------------------
+
+  Widget _buildCreateButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 46,
+      child: ElevatedButton(
+        onPressed: isSaving ? null : createSample,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: teal,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor:
+              teal.withValues(alpha: 0.5),
+          disabledForegroundColor: Colors.white,
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(
+            vertical: 12,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(7),
+          ),
+        ),
+        child: isSaving
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : const Row(
+                mainAxisAlignment:
+                    MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.add_circle_outline,
+                    size: 18,
+                  ),
+
+                  SizedBox(width: 7),
+
+                  Text(
+                    'Create Sample',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // SHARED UI HELPERS
+  // ---------------------------------------------------------------------------
+
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontFamily: 'Inter',
+        fontSize: 14,
+        fontWeight: FontWeight.w700,
+        color: primaryBlack,
+      ),
+    );
+  }
+
+  Widget _buildFieldLabel(String label) {
+    return Text(
+      label,
+      style: const TextStyle(
+        fontFamily: 'Inter',
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        color: primaryBlack,
+      ),
+    );
+  }
+
+  Widget _buildSectionDivider() {
+    return const Divider(
+      height: 1,
+      color: borderColor,
+    );
+  }
+
+  InputDecoration _inputDecoration({
+    required String hintText,
+    IconData? prefixIcon,
+    EdgeInsets? contentPadding,
+  }) {
+    return InputDecoration(
+      hintText: hintText,
+      hintStyle: const TextStyle(
+        fontFamily: 'Inter',
+        fontSize: 12,
+        color: secondaryText,
+      ),
+      prefixIcon: prefixIcon == null
+          ? null
+          : Icon(
+              prefixIcon,
+              size: 19,
+              color: secondaryText,
+            ),
+      contentPadding:
+          contentPadding ??
+              const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 11,
+              ),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(7),
+        borderSide: const BorderSide(
+          color: borderColor,
+        ),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(7),
+        borderSide: const BorderSide(
+          color: borderColor,
+        ),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(7),
+        borderSide: const BorderSide(
+          color: teal,
+          width: 1.5,
+        ),
+      ),
     );
   }
 }

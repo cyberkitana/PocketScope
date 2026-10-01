@@ -1,10 +1,16 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+
+import '../../app/routes.dart';
 import '../../services/database_service.dart';
 import '../samples/new_sample_screen.dart';
-import '../samples/sample_record_screen.dart';
+import '../screens/images/upload_images_screen.dart';
+import 'patient_record_dialogs.dart';
+import 'patient_record_widgets.dart';
+import 'patient_records_screen.dart';
 
-/// Displays the complete record for one patient.
 class IndividualPatientRecord extends StatefulWidget {
   final String patientId;
 
@@ -21,9 +27,14 @@ class IndividualPatientRecord extends StatefulWidget {
 class _IndividualPatientRecordState
     extends State<IndividualPatientRecord> {
   Map<String, dynamic>? patient;
+
   List<Map<String, dynamic>> samples = [];
 
+  final Map<String, String?> _sampleImagePaths = {};
+
   bool isLoading = true;
+
+  String _clinicalNote = '';
 
   @override
   void initState() {
@@ -33,8 +44,7 @@ class _IndividualPatientRecordState
 
   Future<void> loadPatientRecord() async {
     try {
-      final loadedPatient =
-          await DatabaseService.getPatient(
+      final loadedPatient = await DatabaseService.getPatient(
         widget.patientId,
       );
 
@@ -43,6 +53,26 @@ class _IndividualPatientRecordState
         widget.patientId,
       );
 
+      final imagePaths = <String, String?>{};
+
+      for (final sample in loadedSamples) {
+        final sampleId = sample['id']?.toString();
+
+        if (sampleId == null || sampleId.isEmpty) {
+          continue;
+        }
+
+        final images =
+            await DatabaseService.getImagesForSample(sampleId);
+
+        if (images.isNotEmpty) {
+          imagePaths[sampleId] =
+              images.first['file_path']?.toString();
+        } else {
+          imagePaths[sampleId] = null;
+        }
+      }
+
       if (!mounted) {
         return;
       }
@@ -50,6 +80,14 @@ class _IndividualPatientRecordState
       setState(() {
         patient = loadedPatient;
         samples = loadedSamples;
+
+        _sampleImagePaths
+          ..clear()
+          ..addAll(imagePaths);
+
+        _clinicalNote =
+            loadedPatient?['clinical_note']?.toString() ?? '';
+
         isLoading = false;
       });
     } catch (error) {
@@ -76,11 +114,58 @@ class _IndividualPatientRecordState
       return 'Patient';
     }
 
-    return '${patient!['first_name']} '
-        '${patient!['surname']}';
+    final firstName =
+        patient!['first_name']?.toString().trim() ?? '';
+
+    final surname =
+        patient!['surname']?.toString().trim() ?? '';
+
+    return '$firstName $surname'.trim();
   }
 
-  String formatDate(String? dateString) {
+  String getPatientName() {
+    return patientName();
+  }
+
+  int calculateAge(String? dateOfBirth) {
+    if (dateOfBirth == null || dateOfBirth.isEmpty) {
+      return 0;
+    }
+
+    final parsedDate = DateTime.tryParse(dateOfBirth);
+
+    if (parsedDate == null) {
+      return 0;
+    }
+
+    final today = DateTime.now();
+
+    int age = today.year - parsedDate.year;
+
+    if (today.month < parsedDate.month ||
+        (today.month == parsedDate.month &&
+            today.day < parsedDate.day)) {
+      age--;
+    }
+
+    return age;
+  }
+
+  String getDateOfBirth() {
+    final dateOfBirth =
+        patient?['date_of_birth']?.toString().trim() ?? '';
+
+    return formatShortDate(dateOfBirth);
+  }
+
+  int getAge() {
+    final dateOfBirth =
+        patient?['date_of_birth']?.toString().trim() ?? '';
+
+    return calculateAge(dateOfBirth);
+  }
+
+  String formatShortDate(String? dateString) {
     if (dateString == null || dateString.isEmpty) {
       return 'Not recorded';
     }
@@ -91,147 +176,880 @@ class _IndividualPatientRecordState
       return 'Not recorded';
     }
 
-    return '${date.day.toString().padLeft(2, '0')}/'
-        '${date.month.toString().padLeft(2, '0')}/'
-        '${date.year}';
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
-  String formatDateTime(String? dateString) {
+  String formatConsentDate(String? dateString) {
+    return formatShortDate(dateString);
+  }
+
+  String formatConsentExpiry(String? dateString) {
     if (dateString == null || dateString.isEmpty) {
       return 'Not recorded';
+    }
+
+    final signedDate = DateTime.tryParse(dateString);
+
+    if (signedDate == null) {
+      return 'Not recorded';
+    }
+
+    final expiryDate = DateTime(
+      signedDate.year + 1,
+      signedDate.month,
+      signedDate.day,
+    );
+
+    return formatShortDate(
+      expiryDate.toIso8601String(),
+    );
+  }
+
+  String formatSampleDate(String? dateString) {
+    return formatShortDate(dateString);
+  }
+
+  String formatSampleTime(String? dateString) {
+    if (dateString == null || dateString.isEmpty) {
+      return '--';
     }
 
     final date = DateTime.tryParse(dateString);
 
     if (date == null) {
+      return '--';
+    }
+
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    return '$hour:$minute';
+  }
+
+  String getSexDisplay(String? sex) {
+    final value = (sex ?? '').trim().toLowerCase();
+
+    if (value == 'male' || value == 'm') {
+      return 'Male';
+    }
+
+    if (value == 'female' || value == 'f') {
+      return 'Female';
+    }
+
+    if (value == 'intersex' || value == 'i') {
+      return 'Intersex';
+    }
+
+    if (value.isEmpty) {
       return 'Not recorded';
     }
 
-    final day =
-        date.day.toString().padLeft(2, '0');
+    return sex!.trim();
+  }
 
-    final month =
-        date.month.toString().padLeft(2, '0');
+  String getSex() {
+    return getSexDisplay(
+      patient?['sex_at_birth']?.toString(),
+    );
+  }
 
-    final hour =
-        date.hour.toString().padLeft(2, '0');
+  String getGenderDisplay() {
+    final gender =
+        patient?['gender']?.toString().trim() ?? '';
 
-    final minute =
-        date.minute.toString().padLeft(2, '0');
+    if (gender.isEmpty) {
+      return 'Not recorded';
+    }
 
-    return '$day/$month/${date.year} '
-        '$hour:$minute';
+    return gender;
+  }
+
+  String getGenderDescription() {
+    return patient?['gender_description']
+            ?.toString()
+            .trim() ??
+        '';
+  }
+
+  String getClinicName() {
+    final clinicName =
+        patient?['clinic_name']?.toString().trim() ?? '';
+
+    if (clinicName.isEmpty) {
+      return 'Not recorded';
+    }
+
+    return clinicName;
+  }
+
+  String getDoctorGpName() {
+    final doctorGpName =
+        patient?['doctor_gp_name']?.toString().trim() ?? '';
+
+    if (doctorGpName.isEmpty) {
+      return 'Not recorded';
+    }
+
+    return doctorGpName;
+  }
+
+  String getPhone() {
+    return getFormattedPhone();
+  }
+
+  String getInitials() {
+    if (patient == null) {
+      return '?';
+    }
+
+    final firstName =
+        patient!['first_name']?.toString().trim() ?? '';
+
+    final surname =
+        patient!['surname']?.toString().trim() ?? '';
+
+    if (firstName.isNotEmpty && surname.isNotEmpty) {
+      return '${firstName[0]}${surname[0]}'.toUpperCase();
+    }
+
+    if (firstName.isNotEmpty) {
+      return firstName[0].toUpperCase();
+    }
+
+    if (surname.isNotEmpty) {
+      return surname[0].toUpperCase();
+    }
+
+    return '?';
+  }
+
+  List<Color> getAvatarColours() {
+    if (samples.isEmpty) {
+      return [
+        PatientRecordColors.newPatientBackground,
+        PatientRecordColors.newPatientText,
+      ];
+    }
+
+    final latestSample = samples.first;
+
+    final status =
+        latestSample['analysis_status']
+                ?.toString()
+                .trim()
+                .toLowerCase() ??
+            '';
+
+    if (status == 'complete' || status == 'completed') {
+      return [
+        PatientRecordColors.completeBackground,
+        PatientRecordColors.completeText,
+      ];
+    }
+
+    return [
+      PatientRecordColors.analysisDueBackground,
+      PatientRecordColors.analysisDueText,
+    ];
+  }
+
+  String getMedicalRecordNumber() {
+    final storedNumber =
+        patient?['medical_record_number']?.toString().trim() ?? '';
+
+    if (storedNumber.isNotEmpty) {
+      return storedNumber;
+    }
+
+    return 'Not assigned';
+  }
+
+  String getIdentityNumber() {
+    final identityNumber =
+        patient?['identity_number']?.toString().trim() ?? '';
+
+    if (identityNumber.isEmpty) {
+      return 'Not recorded';
+    }
+
+    return identityNumber;
+  }
+
+  String getPatientType() {
+    if (samples.isEmpty) {
+      return 'New patient';
+    }
+
+    return 'Established patient';
+  }
+
+  String getFormattedPhone() {
+    final phone =
+        patient?['phone_number']?.toString().trim() ?? '';
+
+    if (phone.isEmpty) {
+      return 'Not recorded';
+    }
+
+    if (phone.startsWith('+27')) {
+      return phone;
+    }
+
+    if (phone.startsWith('0')) {
+      return '(+27) ${phone.substring(1)}';
+    }
+
+    return '(+27) $phone';
+  }
+
+  String getSampleTypeName(String? specimenType) {
+    final type =
+        (specimenType ?? '').trim().toLowerCase();
+
+    if (type == 'urine') {
+      return 'Urine sediment';
+    }
+
+    if (type == 'blood') {
+      return 'Blood smear';
+    }
+
+    return specimenType?.trim().isNotEmpty == true
+        ? specimenType!.trim()
+        : 'Unknown sample';
+  }
+
+  List<Color> getSampleStatusColours(String? status) {
+    final normalised =
+        (status ?? '').trim().toLowerCase();
+
+    if (normalised == 'complete' ||
+        normalised == 'completed') {
+      return [
+        PatientRecordColors.completeBackground,
+        PatientRecordColors.completeText,
+      ];
+    }
+
+    return [
+      PatientRecordColors.analysisDueBackground,
+      PatientRecordColors.analysisDueText,
+    ];
+  }
+
+  String getSampleStatus(String? status) {
+    final normalised =
+        (status ?? '').trim().toLowerCase();
+
+    if (normalised == 'complete' ||
+        normalised == 'completed') {
+      return 'Complete';
+    }
+
+    return 'Needs review';
+  }
+
+  bool getConsentObtained() {
+    final signaturePath =
+        patient?['imaging_consent_signature_path']
+                ?.toString()
+                .trim() ??
+            '';
+
+    final signedDate =
+        patient?['imaging_consent_date']
+                ?.toString()
+                .trim() ??
+            '';
+
+    return signaturePath.isNotEmpty &&
+        signedDate.isNotEmpty &&
+        File(signaturePath).existsSync();
+  }
+
+  bool hasImagingConsent() {
+    return getConsentObtained();
+  }
+
+  Future<void> editClinicalNote() async {
+    final controller = TextEditingController(
+      text: _clinicalNote,
+    );
+
+    final updatedNote = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Clinical note',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.black,
+                    ),
+                  ),
+
+                  const SizedBox(height: 6),
+
+                  const Text(
+                    'Add or update the clinical note for this patient.',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 11,
+                      color: PatientRecordColors.secondaryText,
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    minLines: 5,
+                    maxLines: 8,
+                    keyboardType: TextInputType.multiline,
+                    textCapitalization:
+                        TextCapitalization.sentences,
+                    decoration: InputDecoration(
+                      hintText: 'Enter clinical note',
+                      hintStyle: const TextStyle(
+                        fontFamily: 'Inter',
+                        fontSize: 12,
+                        color: PatientRecordColors.tertiaryText,
+                      ),
+                      filled: true,
+                      fillColor:
+                          PatientRecordColors.pageBackground,
+                      contentPadding:
+                          const EdgeInsets.all(12),
+                      border: OutlineInputBorder(
+                        borderRadius:
+                            BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius:
+                            BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                          color: Color(0xFFD8E2E5),
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius:
+                            BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                          color: PatientRecordColors.teal,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  Row(
+                    mainAxisAlignment:
+                        MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(dialogContext).pop();
+                        },
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            color:
+                                PatientRecordColors.secondaryText,
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              PatientRecordColors.teal,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding:
+                              const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 10,
+                          ),
+                          shape:
+                              RoundedRectangleBorder(
+                            borderRadius:
+                                BorderRadius.circular(9),
+                          ),
+                        ),
+                        onPressed: () {
+                          Navigator.of(dialogContext).pop(
+                            controller.text.trim(),
+                          );
+                        },
+                        child: const Text(
+                          'Save',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (updatedNote == null) {
+      return;
+    }
+
+    try {
+      final saved =
+          await DatabaseService.updatePatientClinicalNote(
+        patientId: widget.patientId,
+        clinicalNote: updatedNote,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'The clinical note could not be saved.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        _clinicalNote = updatedNote;
+
+        if (patient != null) {
+          patient!['clinical_note'] = updatedNote;
+        }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Clinical note saved.'),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Unable to save clinical note: $error',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> openConsentDialog() async {
+    final signedDate = await showImagingConsentDialog(
+      context: context,
+      patientId: widget.patientId,
+    );
+
+    if (signedDate == null || !mounted) {
+      return;
+    }
+
+    await loadPatientRecord();
+  }
+
+  void editPatient() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Patient profile editing will be available here.',
+        ),
+      ),
+    );
+  }
+
+  void viewConsent() {
+    final signaturePath =
+        patient?['imaging_consent_signature_path']
+                ?.toString()
+                .trim() ??
+            '';
+
+    if (signaturePath.isEmpty) {
+      return;
+    }
+
+    if (!File(signaturePath).existsSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The saved consent signature could not be found.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text(
+            'Imaging consent',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          content: SizedBox(
+            width: 500,
+            child: Image.file(
+              File(signaturePath),
+              fit: BoxFit.contain,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> openNewSample() async {
+    if (!mounted) {
+      return;
+    }
+
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            NewSampleScreen(
+        builder: (context) => NewSampleScreen(
           patientId: widget.patientId,
         ),
       ),
     );
 
+    if (!mounted) {
+      return;
+    }
+
     await loadPatientRecord();
   }
 
-  Future<void> openSample(
-    Map<String, dynamic> sample,
-  ) async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            SampleRecordScreen(
-          sampleId: sample['id'] as String,
-          specimenType:
-              sample['specimen_type'] as String,
-          imageCount: 0,
+/// Opens the upload page for an existing sample.
+///
+/// Pending samples should continue through the analysis workflow
+/// rather than opening the sample record screen.
+Future<void> openSample(
+  Map<String, dynamic> sample,
+) async {
+  if (!mounted) {
+    return;
+  }
+
+  final sampleId = sample['id']?.toString();
+  final specimenType = sample['specimen_type']?.toString();
+
+  if (sampleId == null ||
+      sampleId.isEmpty ||
+      specimenType == null ||
+      specimenType.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'This sample is missing the information needed to continue.',
         ),
       ),
     );
-
-    await loadPatientRecord();
+    return;
   }
 
-  Widget buildPatientDetails() {
-    if (patient == null) {
-      return const SizedBox.shrink();
-    }
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => UploadImagesScreen(
+        sampleId: sampleId,
+        specimenType: specimenType,
+      ),
+    ),
+  );
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
+  if (!mounted) {
+    return;
+  }
+
+  await loadPatientRecord();
+}  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: PatientRecordColors.pageBackground,
+      body: SafeArea(
         child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Patient Details',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+            _buildTopBar(),
+
+            Expanded(
+              child: isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: PatientRecordColors.teal,
+                      ),
+                    )
+                  : patient == null
+                      ? const Center(
+                          child: Text(
+                            'Patient record could not be found.',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              color:
+                                  PatientRecordColors.secondaryText,
+                              fontSize: 12,
+                            ),
+                          ),
+                        )
+                      : _buildContent(),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar:
+          PatientRecordBottomNavigation(
+        onHome: () {
+          Navigator.pushNamedAndRemoveUntil(
+            context,
+            AppRoutes.home,
+            (route) => false,
+          );
+        },
+        onPatients: () {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) =>
+                  const PatientRecordsScreen(),
+            ),
+          );
+        },
+        onCapture: openNewSample,
+        onReports: () {},
+      ),
+    );
+  }
+
+  Widget _buildTopBar() {
+    return SizedBox(
+      height: 62,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 20,
+        ),
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+              },
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                alignment: Alignment.center,
+                child: SvgPicture.asset(
+                  'assets/images/chevron-left.svg',
+                  width: 20,
+                  height: 20,
+                  colorFilter: const ColorFilter.mode(
+                    PatientRecordColors.primaryText,
+                    BlendMode.srcIn,
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 16),
-            _detailRow(
-              'Patient ID',
-              patient!['id']?.toString() ??
-                  'Not recorded',
-            ),
-            _detailRow(
-              'Name',
-              patientName(),
-            ),
-            _detailRow(
-              'Date of Birth',
-              formatDate(
-                patient!['date_of_birth']
-                    ?.toString(),
+
+            const SizedBox(width: 10),
+
+            Expanded(
+              child: Column(
+                mainAxisAlignment:
+                    MainAxisAlignment.center,
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Patient profile',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      color:
+                          PatientRecordColors.primaryText,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+
+                  const SizedBox(height: 5),
+
+                  Text(
+                    patient?['id']?.toString() ?? '',
+                    style: const TextStyle(
+                      fontFamily: 'Inter',
+                      color:
+                          PatientRecordColors.secondaryText,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
               ),
             ),
-            _detailRow(
-              'Sex at Birth',
-              patient!['sex_at_birth']
-                      ?.toString() ??
-                  'Not recorded',
-            ),
-            _detailRow(
-              'Gender',
-              patient!['gender']?.toString() ??
-                  'Not recorded',
-            ),
-            if (patient!['gender_description'] !=
-                    null &&
-                patient!['gender_description']
-                    .toString()
-                    .isNotEmpty)
-              _detailRow(
-                'Gender Description',
-                patient![
-                        'gender_description']
-                    .toString(),
+
+            PopupMenuButton<String>(
+              tooltip: 'More options',
+              padding: EdgeInsets.zero,
+              offset: const Offset(0, 42),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(9),
               ),
-            _detailRow(
-              'Phone',
-              patient!['phone_number']
-                      ?.toString() ??
-                  'Not recorded',
-            ),
-            if (patient!['email'] != null &&
-                patient!['email']
-                    .toString()
-                    .isNotEmpty)
-              _detailRow(
-                'Email',
-                patient!['email'].toString(),
+              icon: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                alignment: Alignment.center,
+                child: SvgPicture.asset(
+                  'assets/images/more-horizontal.svg',
+                  width: 20,
+                  height: 20,
+                  colorFilter: const ColorFilter.mode(
+                    PatientRecordColors.primaryText,
+                    BlendMode.srcIn,
+                  ),
+                ),
               ),
-            _detailRow(
-              'Address',
-              patient!['address']?.toString() ??
-                  'Not recorded',
+              itemBuilder: (context) {
+                final hasConsent =
+                    getConsentObtained();
+
+                return [
+                  const PopupMenuItem<String>(
+                    value: 'edit_profile',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.edit_outlined,
+                          size: 18,
+                        ),
+                        SizedBox(width: 10),
+                        Text(
+                          'Edit profile',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  PopupMenuItem<String>(
+                    value: hasConsent
+                        ? 'view_consent'
+                        : null,
+                    enabled: hasConsent,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.draw_outlined,
+                          size: 18,
+                          color: hasConsent
+                              ? null
+                              : Colors.grey.shade400,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          'View consent',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 13,
+                            color: hasConsent
+                                ? null
+                                : Colors.grey.shade400,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ];
+              },
+              onSelected: (value) {
+                if (value == 'edit_profile') {
+                  editPatient();
+                }
+
+                if (value == 'view_consent') {
+                  viewConsent();
+                }
+              },
             ),
           ],
         ),
@@ -239,329 +1057,87 @@ class _IndividualPatientRecordState
     );
   }
 
-  Widget _detailRow(
-    String label,
-    String value,
-  ) {
+  Widget _buildContent() {
     return Padding(
-      padding: const EdgeInsets.only(
-        bottom: 10,
+      padding: const EdgeInsets.fromLTRB(
+        20,
+        8,
+        20,
+        10,
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment:
             CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 145,
-            child: Text(
-              label,
-              style: TextStyle(
-                color: Colors.grey.shade600,
-                fontWeight: FontWeight.w500,
-              ),
+          PatientSummaryCard(
+            patient: patient!,
+            patientName: getPatientName(),
+            initials: getInitials(),
+            medicalRecordNumber:
+                getMedicalRecordNumber(),
+            identityNumber: getIdentityNumber(),
+            patientType: getPatientType(),
+            dateOfBirth: getDateOfBirth(),
+            age: getAge(),
+            sex: getSex(),
+            gender: getGenderDisplay(),
+            genderDescription:
+                getGenderDescription(),
+            phone: getPhone(),
+            clinicName: getClinicName(),
+            doctorGpName: getDoctorGpName(),
+            avatarColours: getAvatarColours(),
+            consentObtained:
+                hasImagingConsent(),
+          ),
+
+          const SizedBox(height: 12),
+
+          ClinicalNoteSection(
+            note: _clinicalNote,
+            onEdit: editClinicalNote,
+          ),
+
+          const SizedBox(height: 10),
+
+          ImagingConsentCard(
+            consentObtained:
+                getConsentObtained(),
+            signedDate: patient?[
+                'imaging_consent_date']?.toString(),
+            formatDate: formatConsentDate,
+            formatExpiry:
+                formatConsentExpiry,
+            onTap: openConsentDialog,
+          ),
+
+          const SizedBox(height: 14),
+
+          Expanded(
+            child: SampleHistorySection(
+              samples: samples,
+              imagePaths: _sampleImagePaths,
+              getSampleTypeName:
+                  getSampleTypeName,
+              formatSampleDate:
+                  formatSampleDate,
+              formatSampleTime:
+                  formatSampleTime,
+              getSampleStatusColours:
+                  getSampleStatusColours,
+              getSampleStatus:
+                  getSampleStatus,
+              onSampleTap: openSample,
             ),
           ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontWeight: FontWeight.w500,
-              ),
-            ),
+
+          const SizedBox(height: 10),
+
+          CaptureNewSampleButton(
+            onTap: openNewSample,
           ),
         ],
       ),
-    );
-  }
-
-  Widget buildSampleCard(
-    Map<String, dynamic> sample,
-  ) {
-    final specimen =
-        sample['specimen_type']?.toString() ??
-            'Unknown';
-
-    final status =
-        sample['analysis_status']?.toString() ??
-            'Pending';
-
-    return Card(
-      margin: const EdgeInsets.only(
-        bottom: 12,
-      ),
-      child: InkWell(
-        onTap: () => openSample(sample),
-        borderRadius:
-            BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              CircleAvatar(
-                child: Icon(
-                  specimen == 'Blood'
-                      ? Icons.bloodtype_outlined
-                      : Icons
-                          .water_drop_outlined,
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      sample['id']?.toString() ??
-                          'Unknown sample',
-                      style: const TextStyle(
-                        fontWeight:
-                            FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      specimen,
-                      style: TextStyle(
-                        color:
-                            Colors.grey.shade700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      sample[
-                              'reason_for_visit']
-                          ?.toString() ??
-                          'No reason recorded',
-                      maxLines: 2,
-                      overflow:
-                          TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Collected: '
-                      '${formatDateTime(
-                        sample[
-                            'collection_date_time'],
-                      )}',
-                      style: TextStyle(
-                        color:
-                            Colors.grey.shade600,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              _statusChip(status),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _statusChip(String status) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 6,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius:
-            BorderRadius.circular(20),
-      ),
-      child: Text(
-        status,
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          isLoading
-              ? 'Patient Record'
-              : patientName(),
-        ),
-      ),
-      body: isLoading
-          ? const Center(
-              child:
-                  CircularProgressIndicator(),
-            )
-          : patient == null
-              ? const Center(
-                  child: Text(
-                    'Patient record could not be found.',
-                  ),
-                )
-              : SafeArea(
-                  child: RefreshIndicator(
-                    onRefresh:
-                        loadPatientRecord,
-                    child:
-                        SingleChildScrollView(
-                      physics:
-                          const AlwaysScrollableScrollPhysics(),
-                      padding:
-                          const EdgeInsets.all(
-                        20,
-                      ),
-                      child: Column(
-                        crossAxisAlignment:
-                            CrossAxisAlignment
-                                .start,
-                        children: [
-                          Text(
-                            patientName(),
-                            style:
-                                const TextStyle(
-                              fontSize: 26,
-                              fontWeight:
-                                  FontWeight.bold,
-                            ),
-                          ),
-
-                          const SizedBox(
-                            height: 4,
-                          ),
-
-                          Text(
-                            'Patient ID: '
-                            '${patient!['id']}',
-                            style: TextStyle(
-                              color: Colors
-                                  .grey.shade600,
-                            ),
-                          ),
-
-                          const SizedBox(
-                            height: 24,
-                          ),
-
-                          buildPatientDetails(),
-
-                          const SizedBox(
-                            height: 28,
-                          ),
-
-                          Row(
-                            mainAxisAlignment:
-                                MainAxisAlignment
-                                    .spaceBetween,
-                            children: [
-                              const Text(
-                                'Sample Records',
-                                style:
-                                    TextStyle(
-                                  fontSize: 20,
-                                  fontWeight:
-                                      FontWeight
-                                          .bold,
-                                ),
-                              ),
-                              FilledButton.icon(
-                                onPressed:
-                                    openNewSample,
-                                icon:
-                                    const Icon(
-                                  Icons
-                                      .add,
-                                ),
-                                label:
-                                    const Text(
-                                  'New Sample',
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(
-                            height: 14,
-                          ),
-
-                          if (samples.isEmpty)
-                            Container(
-                              width:
-                                  double.infinity,
-                              padding:
-                                  const EdgeInsets
-                                      .all(
-                                24,
-                              ),
-                              decoration:
-                                  BoxDecoration(
-                                border: Border.all(
-                                  color: Colors
-                                      .grey
-                                      .shade300,
-                                ),
-                                borderRadius:
-                                    BorderRadius
-                                        .circular(
-                                  12,
-                                ),
-                              ),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons
-                                        .science_outlined,
-                                    size: 40,
-                                    color: Colors
-                                        .grey
-                                        .shade500,
-                                  ),
-                                  const SizedBox(
-                                    height: 10,
-                                  ),
-                                  const Text(
-                                    'No samples recorded yet.',
-                                    style:
-                                        TextStyle(
-                                      fontWeight:
-                                          FontWeight
-                                              .w600,
-                                    ),
-                                  ),
-                                  const SizedBox(
-                                    height: 4,
-                                  ),
-                                  Text(
-                                    'Create a new sample '
-                                    'to begin an analysis.',
-                                    style:
-                                        TextStyle(
-                                      color: Colors
-                                          .grey
-                                          .shade600,
-                                    ),
-                                    textAlign:
-                                        TextAlign
-                                            .center,
-                                  ),
-                                ],
-                              ),
-                            )
-                          else
-                            ...samples.map(
-                              buildSampleCard,
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
     );
   }
 }
